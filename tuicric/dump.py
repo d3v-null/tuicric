@@ -12,58 +12,119 @@ import argparse
 from builtins import (bytes, str, super)
 from tabulate import tabulate
 
-def make_id(string):
-    """Make an id out of a string."""
 
-    response = string.lower()
-    response = re.sub(r'\W', '', response)
-    return '%s' % response
 
-class SysexInfo(list):
+class GraphvizMixin(object):
+    """Mixin for objects with a graphviz representation."""
+
+    signal_attrs = {'style':'bold', 'color': 'red'}
+    data_attrs = {'style':'dashed', 'color': 'blue'}
+
+    def __init__(self, name=''):
+        self.name = name
+
+    def make_id(self, string):
+        """Make an id suitable for Graphviz from a string."""
+
+        response = string.lower()
+        response = re.sub(r'\W', '', response)
+        return '%s' % response
+
+    def to_gv(self, indentation=0):
+        raise NotImplementedError()
+
+    @property
+    def gv_id(self):
+        return self.make_id(self.name)
+
+    @classmethod
+    def line_delimeter(cls, indentation=0):
+        return '\n' + ('\t' * indentation)
+
+    @classmethod
+    def gv_connection(cls, from_id, to_id, edge_attrs=None, edge_type=None):
+        response = "%s -> %s" % (from_id, to_id)
+        if edge_attrs is None:
+            edge_attrs = {}
+        if edge_type == 'signal':
+            edge_attrs.update(cls.signal_attrs)
+        elif edge_type == 'data':
+            edge_attrs.update(cls.data_attrs)
+        if edge_attrs:
+            response += ' [%s]' % ','.join([
+                "%s=%s" % (key, value) for key, value in edge_attrs.items()
+            ])
+        response += ';'
+        return response
+
+
+class SysexInfo(list, GraphvizMixin):
     """List of `SysexInfoSection`s which contains info about a SysEx message."""
 
-    def to_gv(self):
-        section_components = [section.to_gv() for section in self]
-        connection_components = [
-            'handle_oscillator1:out -> oscillator1level:in',
-            'handle_oscillator2:out -> oscillator2level:in'
-        ]
-        connection_components.append('')
-        return "digraph {\n\t" \
-            + "\n\t".join(section_components) \
-            + "\n\t" \
-            + ";\n\t".join(connection_components) \
-            + "}"
+    def __init__(self, sections=None, name=''):
+        if sections is None:
+            sections = []
+        GraphvizMixin.__init__(self, name)
+        list.__init__(self, sections)
 
-class SysexInfoSection(list):
+
+    def gv_components(self, indentation=0):
+        """Graphviz components for object."""
+
+        response = [section.to_gv(indentation) for section in self]
+        response += [
+            self.gv_connection('handle_oscillator1:out', 'oscillator1level:in', edge_type='signal'),
+            self.gv_connection('handle_oscillator2:out', 'oscillator2level:in', edge_type='signal')
+        ]
+        return response
+
+
+    def to_gv(self, indentation=0):
+        response = "digraph {"
+        indentation += 1
+        response += self.line_delimeter(indentation)
+        response += self.line_delimeter(indentation).join(self.gv_components(indentation))
+        indentation -= 1
+        response += self.line_delimeter(indentation)
+        response += "}"
+        return response
+
+class SysexInfoSection(list, GraphvizMixin):
     """List of `SysexInfoParam`s which contains info about part of a Sysex message."""
 
     def __init__(self, name='', params=None):
         if params is None:
             params = []
-        self.name = name
-        super().__init__(params)
+        GraphvizMixin.__init__(self, name)
+        list.__init__(self, params)
 
     @property
-    def gvid(self):
+    def gv_id(self):
         """ID for graphviz."""
 
-        return 'cluster_%s' % make_id(self.name)
+        return 'cluster_%s' % self.make_id(self.name)
 
-    @property
-    def gv_components(self):
-        """Graphviz components for section."""
+    def gv_components(self, indentation=0):
+        """Graphviz components for object."""
+
         response = [
-            "handle_%s [style=bold,shape=record,label=\"<in>|%s|<out>\"]" % \
-                (make_id(self.name), self.name)
+            "handle_%s [style=bold,shape=record,label=\"<in>|%s|<out>\"];" % \
+                (self.make_id(self.name), self.name)
         ]
-        response += [param.to_gv() for param in self]
+        response += [(param.to_gv(indentation) + ';') for param in self]
         return response
 
-    def to_gv(self):
-        return "subgraph %s {\n\t\t" % self.gvid \
-                + ";\n\t\t".join(self.gv_components) + ";\n\t}"
+    def to_gv(self, indentation=0):
+        """Graphviz representation of self."""
 
+        response = "subgraph %s {" % self.gv_id
+        indentation += 1
+        response += self.line_delimeter(indentation)
+        response += self.line_delimeter(indentation).join(self.gv_components(indentation))
+        indentation -= 1
+        response += self.line_delimeter(indentation)
+        response += "}"
+        return response
 
 class SysexInfoSectionOscillator(SysexInfoSection):
     """List of `SysexInfoParam`s specific to a Circuit Oscillator."""
@@ -128,20 +189,25 @@ class SysexInfoSectionMixer(SysexInfoSection):
         ]
         super().__init__(name, params)
 
-    @property
-    def gv_components(self):
-        response = super().gv_components
+    def gv_components(self, indentation=0):
+        response = super().gv_components(indentation)
         response += [
-            'oscillator1level:out -> ringmodlevel:in',
-            'oscillator2level:out -> ringmodlevel:in',
-            'ringmodlevel:out -> prefxlevel:in'
-            # 'oscillator1level:out -> prefxlevel:in'
-            # 'oscillator2level:out -> prefxlevel:in'
-            # 'noiselevel:out -> prefxlevel:in'
+            self.gv_connection(
+                'oscillator1level:out',
+                '{ringmodlevel:in:w, prefxlevel:in:w}', edge_type='signal'),
+            self.gv_connection(
+                'oscillator2level:out',
+                '{ringmodlevel:in:w, prefxlevel:in:w}', edge_type='signal'),
+            self.gv_connection(
+                'ringmodlevel:out:e', 'prefxlevel:in:w', edge_type='signal'
+            ),
+            self.gv_connection(
+                'noiselevel:out:e', 'prefxlevel:in:w', edge_type='signal'
+            )
         ]
         return response
 
-class SysexInfoParam(object):
+class SysexInfoParam(GraphvizMixin):
     """Contains information about a single param within a sysex message."""
 
     def __init__(self, offset, name='', range_min=0, range_max=127, default=0):
@@ -154,11 +220,11 @@ class SysexInfoParam(object):
                 default, range_min, range_max
             )
         self.offset = offset
-        self.name = name
         self.range_min = range_min
         self.range_max = range_max
         self.default = default
         self.raw = None
+        super().__init__(name)
 
     def format(self, raw):
         """Format the raw value."""
@@ -177,17 +243,11 @@ class SysexInfoParam(object):
         return self.format(raw)
 
     @property
-    def gvid(self):
-        """ID for graphviz."""
-
-        return make_id(self.name)
-
-    @property
     def label(self):
-        return "{<mod>|<in>}|{%s|%s}|<out>" % (self.name, self.value)
+        return "{<mod>m|<in>i}|{%s|%s}|<out>o" % (self.name, self.value)
 
-    def to_gv(self):
-        return "%s [" % self.gvid \
+    def to_gv(self, indentation=0):
+        return "%s [" % self.gv_id \
             + "shape=record," \
             + "label=\"%s\"" % self.label \
             + "]"
