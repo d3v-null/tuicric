@@ -19,6 +19,8 @@ class GraphvizMixin(object):
 
     signal_attrs = {'style':'bold', 'color': 'red'}
     data_attrs = {'style':'dashed', 'color': 'blue'}
+    handle_attrs = {'style': 'bold', 'shape': 'record'}
+    param_attrs = {'shape':'record'}
 
     def __init__(self, name=''):
         self.name = name
@@ -42,6 +44,17 @@ class GraphvizMixin(object):
         return '\n' + ('\t' * indentation)
 
     @classmethod
+    def gv_str_attr(cls, attrs):
+        """Return a graphviz string representation of a set of attributes."""
+
+        response = ''
+        if attrs:
+            response += ' [%s]' % ','.join([
+                "%s=%s" % (key, value) for key, value in attrs.items()
+            ])
+        return response
+
+    @classmethod
     def gv_connection(cls, from_id, to_id, edge_attrs=None, edge_type=None):
         response = "%s -> %s" % (from_id, to_id)
         if edge_attrs is None:
@@ -51,11 +64,24 @@ class GraphvizMixin(object):
         elif edge_type == 'data':
             edge_attrs.update(cls.data_attrs)
         if edge_attrs:
-            response += ' [%s]' % ','.join([
-                "%s=%s" % (key, value) for key, value in edge_attrs.items()
-            ])
+            response += ' ' + cls.gv_str_attr(edge_attrs)
         response += ';'
         return response
+
+    @classmethod
+    def gv_node(cls, node_id, node_attrs=None, node_type=None):
+        response = node_id
+        if node_attrs is None:
+            node_attrs = {}
+        if node_type == 'handle':
+            node_attrs.update(cls.handle_attrs)
+        elif node_type == 'param':
+            node_attrs.update(cls.param_attrs)
+        if node_attrs:
+            response += ' ' + cls.gv_str_attr(node_attrs)
+        print("gv_node response: %s" % response)
+        return response
+
 
 
 class SysexInfo(list, GraphvizMixin):
@@ -108,10 +134,16 @@ class SysexInfoSection(list, GraphvizMixin):
         """Graphviz components for object."""
 
         response = [
-            "handle_%s [style=bold,shape=record,label=\"<in>|%s|<out>\"];" % \
-                (self.make_id(self.name), self.name)
+            self.gv_node(
+                'handle_%s' % self.make_id(self.name),
+                node_attrs={
+                    'label':'"<in>|%s|<out>"' % self.name
+                },
+                node_type='handle'
+            )
         ]
         response += [(param.to_gv(indentation) + ';') for param in self]
+        print("gv_components response %s" % response)
         return response
 
     def to_gv(self, indentation=0):
@@ -204,6 +236,37 @@ class SysexInfoSectionMixer(SysexInfoSection):
             self.gv_connection(
                 'noiselevel:out:e', 'prefxlevel:in:w', edge_type='signal'
             )
+        ]
+        return response
+
+class SysexInfoSectionEnvelope(SysexInfoSection):
+    """List of `SysexInfoParam`s specific to a Circuit Enveloper."""
+
+    def __init__(self, name='', offset=0x00, params=None, defaults=None):
+        if defaults is None:
+            defaults = {}
+        if params is None:
+            defaults = []
+        params += [
+            SysexInfoParamMap(
+                offset + 0x01, name + ' Attack'
+            ),
+            SysexInfoParamMap(
+                offset + 0x02, name + ' Decay'
+            ),
+            SysexInfoParamMap(
+                offset + 0x03, name + ' Sustain'
+            ),
+            SysexInfoParamMap(
+                offset + 0x04, name + ' Release'
+            )
+        ]
+        super().__init__(name, params)
+
+    def gv_components(self, indentation=0):
+        response = [
+            'handle_oscillator1_%s' % self.gv_id,
+            'handle_oscillator1_%s' % self.gv_id,
         ]
         return response
 
@@ -361,15 +424,37 @@ PATCH_INFO = SysexInfo([
     SysexInfoSectionMixer(
         name='Mixer',
         offset=0x3F
-    )
-
+    ),
+    SysexInfoSectionEnvelope(
+        name='Envelope 1',
+        offset=0x4E,
+        params=[
+            SysexInfoParamMap(
+                0x4E, 'Envelope 1 Velocity',
+                map_min=-64, map_max=64, default=64
+            )
+        ]
+    ),
+    SysexInfoSectionEnvelope(
+        name='Envelope 2',
+        offset=0x53,
+        params=[
+            SysexInfoParamMap(
+                0x53, 'Envelope 2 Velocity',
+                map_min=-64, map_max=64, default=64
+            )
+        ]
+    ),
+    SysexInfoSectionEnvelope(
+        name='Envelope 3',
+        offset=0x58,
+        params=[
+            SysexInfoParamMap(
+                0x58, 'Envelope 3 Delay', default=0
+            )
+        ]
+    ),
 ])
-#
-# class SysexInfoParamCC(SysexInfoParam):
-#     """A class containing information about a single Control Change param."""
-#
-# class SysexInfoParamNRPN(SysexInfoParam):
-#     """A class containing information about a single Non-Registered param."""
 
 def dump_sysex_patch_gv(sysex):
     """Create a graphviz representation of the SysEx patch bytestring."""
